@@ -47,37 +47,35 @@ func main() {
 func Per(eventCount int, duration time.Duration) rate.Limit {
 	return rate.Every(duration / time.Duration(eventCount))
 }
+
 func Open() *APIConnection {
-	secondLimit := rate.NewLimiter(Per(2, time.Second), 1)   // <1>
-	minuteLimit := rate.NewLimiter(Per(10, time.Minute), 10) // <2>
 	return &APIConnection{
-		rateLimiter: MultiLimiter(secondLimit, minuteLimit), // <3>
+		apiLimit: MultiLimiter( // <1>
+			rate.NewLimiter(Per(2, time.Second), 2),
+			rate.NewLimiter(Per(10, time.Minute), 10),
+		),
+		diskLimit: MultiLimiter( // <2>
+			rate.NewLimiter(rate.Limit(1), 1),
+		),
+		networkLimit: MultiLimiter( // <3>
+			rate.NewLimiter(Per(3, time.Second), 3),
+		),
 	}
-}
-
-type APIConnection struct {
-	rateLimiter RateLimiter
-}
-
-func (a *APIConnection) ReadFile(ctx context.Context) error {
-	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return err
-	}
-	// Pretend we do work here
-	return nil
-}
-
-func (a *APIConnection) ResolveAddress(ctx context.Context) error {
-	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return err
-	}
-	// Pretend we do work here
-	return nil
 }
 
 type RateLimiter interface { // <1>
 	Wait(context.Context) error
 	Limit() rate.Limit
+}
+
+type APIConnection struct {
+	networkLimit,
+	diskLimit,
+	apiLimit RateLimiter
+}
+
+type multiLimiter struct {
+	limiters []RateLimiter
 }
 
 func MultiLimiter(limiters ...RateLimiter) *multiLimiter {
@@ -88,8 +86,22 @@ func MultiLimiter(limiters ...RateLimiter) *multiLimiter {
 	return &multiLimiter{limiters: limiters}
 }
 
-type multiLimiter struct {
-	limiters []RateLimiter
+func (a *APIConnection) ReadFile(ctx context.Context) error {
+	err := MultiLimiter(a.apiLimit, a.diskLimit).Wait(ctx) // <4>
+	if err != nil {
+		return err
+	}
+	// Pretend we do work here
+	return nil
+}
+
+func (a *APIConnection) ResolveAddress(ctx context.Context) error {
+	err := MultiLimiter(a.apiLimit, a.networkLimit).Wait(ctx) // <5>
+	if err != nil {
+		return err
+	}
+	// Pretend we do work here
+	return nil
 }
 
 func (l *multiLimiter) Wait(ctx context.Context) error {
